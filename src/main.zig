@@ -100,12 +100,13 @@ fn Signature(comptime Hash: type) type {
     };
 }
 
-fn DRNG(comptime Aead: type) type {
-    const seed_length = 2*Aead.key_length;
+fn DRNG(comptime Aead: type, comptime output_length: usize) type {
+    const seed_length = Aead.key_length + output_length;
     return struct {
+        pub const key_length: output_length;
         const Self = @This();
         secret1: [Aead.key_length]u8 = undefined,
-        secret2: [Aead.key_length]u8 = undefined,
+        secret2: [output_length]u8 = undefined,
         nonce: [Aead.nonce_length]u8,
 
         pub fn init(seed: [seed_length]u8, nonce: [Aead.nonce_length]u8) Self  {
@@ -119,7 +120,7 @@ fn DRNG(comptime Aead: type) type {
 
         pub fn next(self: *Self) !void {
             var overflow = true;
-            // constant time algo for side-channel protection
+            // constant time (unconfirmed) algo for side-channel protection
             for (self.nonce) |byte,i| {
                 const carry: u8 = if (overflow) 1 else 0;
                 overflow = @addWithOverflow(u8, byte, carry, &self.nonce[i]);
@@ -129,10 +130,10 @@ fn DRNG(comptime Aead: type) type {
             }
         }
 
-        pub fn generate(self: *const Self, key: *[Aead.key_length]u8) void {
+        pub fn generate(self: *const Self, key: *[output_length]u8) void {
             const nothing = [_]u8{};
             var tag: [Aead.tag_length]u8 = undefined;
-            Aead.encrypt(key, tag[0..], self.secret1[0..], nothing[0..], self.nonce, self.secret2);
+            Aead.encrypt(key, tag[0..], self.secret2[0..], nothing[0..], self.nonce, self.secret1);
         }
     };
 }
@@ -195,7 +196,7 @@ test "Signature" {
 test "DRNG" {
     const seed = [_]u8{0} ** (2*ChaCha20Poly1305.key_length);
     var nonce = [_]u8{0} ** ChaCha20Poly1305.nonce_length;
-    var drng = DRNG(ChaCha20Poly1305).init(seed, nonce);
+    var drng = DRNG(ChaCha20Poly1305, ChaCha20Poly1305.key_length).init(seed, nonce);
     var key = [_]u8{0} ** ChaCha20Poly1305.key_length;
 
     // no-overflow
@@ -211,7 +212,7 @@ test "DRNG" {
 
     // overflow
     nonce = [_]u8{255} ** ChaCha20Poly1305.nonce_length;
-    drng = DRNG(ChaCha20Poly1305).init(seed, nonce);
+    drng = DRNG(ChaCha20Poly1305, ChaCha20Poly1305.key_length).init(seed, nonce);
     if (drng.next()) {
         expect(false);
     } else |err| {

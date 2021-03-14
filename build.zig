@@ -3,8 +3,8 @@ const ReleaseFast = @import("std").builtin.Mode.ReleaseFast;
 
 pub fn build(b: *Builder) void {
     b.verbose = true;
-    const mode = b.standardReleaseOptions();
-    //const mode = ReleaseFast;
+    //const mode = b.standardReleaseOptions();
+    const mode = ReleaseFast;
     const lib = b.addStaticLibrary("WOTS", "src/main.zig");
     lib.setBuildMode(mode);
     lib.install();
