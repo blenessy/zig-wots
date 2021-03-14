@@ -1,10 +1,13 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const copy = std.mem.copy;
 const expect = std.testing.expect;
 const print = std.debug.print;
+const randomBytes = std.crypto.randomBytes;
 const time = std.time;
+const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const Random = std.rand.Random;
-const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha = std.crypto.hash.sha2.Sha256;
 const Timer = time.Timer;
 
 const W = 8;
@@ -97,6 +100,43 @@ fn Signature(comptime Hash: type) type {
     };
 }
 
+fn DRNG(comptime Aead: type) type {
+    const seed_length = 2*Aead.key_length;
+    return struct {
+        const Self = @This();
+        secret1: [Aead.key_length]u8 = undefined,
+        secret2: [Aead.key_length]u8 = undefined,
+        nonce: [Aead.nonce_length]u8,
+
+        pub fn init(seed: [seed_length]u8, nonce: [Aead.nonce_length]u8) Self  {
+            var self = Self{
+                .nonce = nonce,
+            };
+            copy(u8, self.secret1[0..], seed[0..Aead.key_length]);
+            copy(u8, self.secret2[0..], seed[Aead.key_length..]);
+            return self;
+        }
+
+        pub fn next(self: *Self) !void {
+            var overflow = true;
+            // constant time algo for side-channel protection
+            for (self.nonce) |byte,i| {
+                const carry: u8 = if (overflow) 1 else 0;
+                overflow = @addWithOverflow(u8, byte, carry, &self.nonce[i]);
+            }
+            if (overflow) {
+                return error.Overflow;
+            }
+        }
+
+        pub fn generate(self: *const Self, key: *[Aead.key_length]u8) void {
+            const nothing = [_]u8{};
+            var tag: [Aead.tag_length]u8 = undefined;
+            Aead.encrypt(key, tag[0..], self.secret1[0..], nothing[0..], self.nonce, self.secret2);
+        }
+    };
+}
+
 fn multi_hash(
     comptime Hash: type,
     iterations: [Hash.digest_length]u8,
@@ -113,20 +153,20 @@ fn multi_hash(
 }
 
 test "PrivateKey" {
-    const n = 32;
+    const n = Sha.digest_length;
     const seed = [_]u8{0} ** n;
     var rand = std.rand.DefaultCsprng.init(seed);
-    const foo = PrivateKey(Sha256).init(&rand.random);
+    const foo = PrivateKey(Sha).init(&rand.random);
     expect(foo.forward_hash_key[0][0] == 196);
     expect(foo.reverse_hash_key[31][31] == 179);
 }
 
 test "PublicKey" {
-    const n = 32;
+    const n = Sha.digest_length;
     const seed = [_]u8{0} ** n;
     var rand = std.rand.DefaultCsprng.init(seed);
-    const foo = PrivateKey(Sha256).init(&rand.random);
-    const bar = PublicKey(Sha256).fromPrivateKey(&foo);
+    const foo = PrivateKey(Sha).init(&rand.random);
+    const bar = PublicKey(Sha).fromPrivateKey(&foo);
     expect(bar.forward_hash_key[0][0] == 117);
     expect(bar.reverse_hash_key[31][31] == 190);
     var digest = [_]u8{0} ** n;
@@ -135,25 +175,52 @@ test "PublicKey" {
 }
 
 test "Signature" {
-    const n = 32;
+    const n = Sha.digest_length;
     const seed = [_]u8{0} ** n;
     var rand = std.rand.DefaultCsprng.init(seed);
-    const foo = PrivateKey(Sha256).init(&rand.random);
-    const bar = PublicKey(Sha256).fromPrivateKey(&foo);
+    const foo = PrivateKey(Sha).init(&rand.random);
+    const bar = PublicKey(Sha).fromPrivateKey(&foo);
     var pkdigest1 = [_]u8{0} ** n;
     bar.compress(pkdigest1[0..]);
-    const sig = Signature(Sha256).fromPrivateKey(&foo, "foo");
+    const sig = Signature(Sha).fromPrivateKey(&foo, "foo");
     expect(sig.forward_hash_key[0][0] == 176);
     expect(sig.reverse_hash_key[31][31] == 110);
-    const baz = PublicKey(Sha256).fromSignature(&sig);
+    const baz = PublicKey(Sha).fromSignature(&sig);
     expect(@TypeOf(bar) == @TypeOf(baz));
     var pkdigest2 = [_]u8{0} ** n;
     baz.compress(pkdigest2[0..]);
     expect(std.mem.eql(u8, pkdigest1[0..], pkdigest2[0..]));
 }
 
+test "DRNG" {
+    const seed = [_]u8{0} ** (2*ChaCha20Poly1305.key_length);
+    var nonce = [_]u8{0} ** ChaCha20Poly1305.nonce_length;
+    var drng = DRNG(ChaCha20Poly1305).init(seed, nonce);
+    var key = [_]u8{0} ** ChaCha20Poly1305.key_length;
+
+    // no-overflow
+    drng.generate(&key);
+    expect(key[0] == 159);
+    if (drng.next()) {
+        // pass
+    } else |err| {
+        expect(false);
+    }
+    drng.generate(&key);
+    expect(key[0] != 159);
+
+    // overflow
+    nonce = [_]u8{255} ** ChaCha20Poly1305.nonce_length;
+    drng = DRNG(ChaCha20Poly1305).init(seed, nonce);
+    if (drng.next()) {
+        expect(false);
+    } else |err| {
+        // pass
+    }
+}
+
 test "Benchmark" {
-    const n = 32;
+    const n = Sha.digest_length;
     const seed = [_]u8{0} ** n;
     var rand = std.rand.DefaultCsprng.init(seed);
 
@@ -163,7 +230,7 @@ test "Benchmark" {
     {
         var i: usize = 0;
         while (i < iter1) : (i += 1) {
-            const tmp = PrivateKey(Sha256).init(&rand.random);
+            const tmp = PrivateKey(Sha).init(&rand.random);
             std.mem.doNotOptimizeAway(&tmp);
         }
     }
@@ -171,13 +238,13 @@ test "Benchmark" {
     var t = @intToFloat(f64, end - start) / time.ns_per_s / iter1;
     print("\nPrivateKey.init: {}s\n", .{t});
 
-    const foo = PrivateKey(Sha256).init(&rand.random);
+    const foo = PrivateKey(Sha).init(&rand.random);
     const iter2 = 100;
     start = timer.lap();
     {
         var i: usize = 0;
         while (i < iter2) : (i += 1) {
-            const tmp = Signature(Sha256).fromPrivateKey(&foo, "foo");
+            const tmp = Signature(Sha).fromPrivateKey(&foo, "foo");
             std.mem.doNotOptimizeAway(&tmp);
         }
     }
@@ -189,7 +256,7 @@ test "Benchmark" {
     {
         var i: usize = 0;
         while (i < iter2) : (i += 1) {
-            const tmp = PublicKey(Sha256).fromPrivateKey(&foo);
+            const tmp = PublicKey(Sha).fromPrivateKey(&foo);
             std.mem.doNotOptimizeAway(&tmp);
         }
     }
