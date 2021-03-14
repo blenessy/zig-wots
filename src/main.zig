@@ -194,10 +194,11 @@ test "Signature" {
 }
 
 test "DRNG" {
-    const seed = [_]u8{0} ** (2*ChaCha20Poly1305.key_length);
+    const key_length = ChaCha20Poly1305.key_length;
+    const seed = [_]u8{0} ** (2*key_length);
     var nonce = [_]u8{0} ** ChaCha20Poly1305.nonce_length;
-    var drng = DRNG(ChaCha20Poly1305, ChaCha20Poly1305.key_length).init(seed, nonce);
-    var key = [_]u8{0} ** ChaCha20Poly1305.key_length;
+    var drng = DRNG(ChaCha20Poly1305, key_length).init(seed, nonce);
+    var key = [_]u8{0} ** key_length;
 
     // no-overflow
     drng.generate(&key);
@@ -212,12 +213,39 @@ test "DRNG" {
 
     // overflow
     nonce = [_]u8{255} ** ChaCha20Poly1305.nonce_length;
-    drng = DRNG(ChaCha20Poly1305, ChaCha20Poly1305.key_length).init(seed, nonce);
+    drng = DRNG(ChaCha20Poly1305, key_length).init(seed, nonce);
     if (drng.next()) {
         expect(false);
     } else |err| {
         // pass
     }
+}
+
+test "DRNG Sanity" {
+    const key_length = ChaCha20Poly1305.key_length;
+    const seed = [_]u8{0} ** (2*key_length);
+    const nonce = [_]u8{0} ** ChaCha20Poly1305.nonce_length;
+    
+    var drng = DRNG(ChaCha20Poly1305, key_length).init(seed, nonce);
+
+    const iterations: u64 = 1000000;
+    var i: u64 = 0;
+    var key = [_]u8{0} ** key_length;
+    var accum: f128 = 0.0; // accumulate all random data
+    while (i < iterations) {
+        drng.generate(&key);
+        try drng.next();
+        for (key) |byte| {
+            accum += @intToFloat(f128, byte);
+        }
+        i += 1;
+    }
+
+    // make sure the average random byte converges to 127.5 as iterations goes to infinity.
+    const mean = accum / @intToFloat(f128, iterations * key_length);
+    const deviation = std.math.absFloat(1 - mean/127.5);
+    print("\nmean: {}, absolute deviation: {}\n", .{mean, deviation});
+    expect(deviation < 1e-4);
 }
 
 test "Benchmark" {
