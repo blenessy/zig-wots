@@ -48,9 +48,9 @@ fn PublicKey(comptime Hash: type) type {
                 .forward_hash_key = pk.forward_hash_key,
                 .reverse_hash_key = pk.reverse_hash_key,
             };
-            const iterations = [_]u8{(1 << W) - 1} ** n; // max iterations
-            multi_hash(Hash, iterations, &self.forward_hash_key, false);
-            multi_hash(Hash, iterations, &self.reverse_hash_key, false);
+            const iterations = [_]u8{(1 << W)-1} ** n; // max iterations
+            multi_hash(Hash, iterations, &self.forward_hash_key, false, 1);
+            multi_hash(Hash, iterations, &self.reverse_hash_key, false, 1);
             return self;
         }
 
@@ -59,8 +59,8 @@ fn PublicKey(comptime Hash: type) type {
                 .forward_hash_key = sig.forward_hash_key,
                 .reverse_hash_key = sig.reverse_hash_key,
             };
-            multi_hash(Hash, sig.messge_digest, &self.forward_hash_key, true);
-            multi_hash(Hash, sig.messge_digest, &self.reverse_hash_key, false);
+            multi_hash(Hash, sig.messge_digest, &self.forward_hash_key, true, 1);
+            multi_hash(Hash, sig.messge_digest, &self.reverse_hash_key, false, 1);
             return self;
         }
 
@@ -93,8 +93,8 @@ fn Signature(comptime Hash: type) type {
                 .reverse_hash_key = pk.reverse_hash_key,
             };
             Hash.hash(msg, self.messge_digest[0..], .{});
-            multi_hash(Hash, self.messge_digest, &self.forward_hash_key, false);
-            multi_hash(Hash, self.messge_digest, &self.reverse_hash_key, true);
+            multi_hash(Hash, self.messge_digest, &self.forward_hash_key, false, 0);
+            multi_hash(Hash, self.messge_digest, &self.reverse_hash_key, true, 0);
             return self;
         }
     };
@@ -143,9 +143,10 @@ fn multi_hash(
     iterations: [Hash.digest_length]u8,
     digest: *[Hash.digest_length][Hash.digest_length]u8,
     flipbits: bool,
+    extra_iterations: u8,
 ) void {
     for (iterations) |n, i| {
-        const m = if (flipbits) ~n else n;
+        const m: usize = (if (flipbits) ~n else n) + extra_iterations;
         var k: usize = 0;
         while (k < m) : (k += 1) {
             Hash.hash(digest[i][0..], digest[i][0..], .{});
@@ -168,11 +169,11 @@ test "PublicKey" {
     var rand = std.rand.DefaultCsprng.init(seed);
     const foo = PrivateKey(Sha).init(&rand.random);
     const bar = PublicKey(Sha).fromPrivateKey(&foo);
-    expect(bar.forward_hash_key[0][0] == 117);
-    expect(bar.reverse_hash_key[31][31] == 190);
+    expect(bar.forward_hash_key[0][0] == 34);
+    expect(bar.reverse_hash_key[31][31] == 128);
     var digest = [_]u8{0} ** n;
     bar.compress(digest[0..]);
-    expect(digest[0] == 42);
+    expect(digest[0] == 85);
 }
 
 test "Signature" {
